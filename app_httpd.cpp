@@ -29,7 +29,7 @@
 #include "storage.h"
 
 // #define HAS_BME280     here and in esp32-cam-webserver.ino  to include the function
-// #define HAS_BME280
+#define HAS_BME280
 
 
 // Functions from the main .ino
