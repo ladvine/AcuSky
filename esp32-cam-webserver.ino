@@ -693,7 +693,18 @@ void WifiSetup() {
       BME280::PresUnit presUnit(BME280::PresUnit_hPa);      // you can change Unit here https://github.com/finitespace/BME280#tempunit-enum
       return bme.pres(presUnit);
   } 
+#else
+  float getBME280_hum() { 
+      return 0;
+      }
 
+  float getBME280_temp() {
+      return 0
+      }
+
+  float getBME280_pres(){ 
+      return 0;
+  } 
 #endif
 
 void setup() {
