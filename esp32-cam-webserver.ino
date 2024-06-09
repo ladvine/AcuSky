@@ -1,5 +1,4 @@
 #include <esp_camera.h>
-#include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
 #include <DNSServer.h>
@@ -9,6 +8,13 @@
 #include "time.h"
 #include <ESPmDNS.h>
 
+#if ESP_IDF_VERSION_MAJOR == 4
+#include "esp_int_wdt.h"
+#elif ESP_IDF_VERSION_MAJOR == 5
+#include "esp_private/esp_int_wdt.h"
+#endif
+
+#include "esp_private/periph_ctrl.h"
 
 /* This sketch is a extension/expansion/reork of the 'official' ESP32 Camera example
  *  sketch from Expressif:
@@ -62,7 +68,7 @@
  *  #define HAS_BME280     here and in app_httpd.cpp  to include the function
 */ 
 
-// #define HAS_BME280
+//#define HAS_BME280
 
 
 // Upstream version string
@@ -410,8 +416,23 @@ void StartCamera() {
         critERR = "<h1>Error!</h1><hr><p>Camera module failed to initialise!</p><p>Please reset (power off/on) the camera.</p>";
         critERR += "<p>We will continue to reboot once per minute since this error sometimes clears automatically.</p>";
         // Start a 60 second watchdog timer
-        esp_task_wdt_init(60,true);
-        esp_task_wdt_add(NULL);
+        #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR == 3  
+          // v3 board manager detected
+          // Create and initialize the watchdog timer(WDT) configuration structure
+          esp_task_wdt_config_t wdt_config = {
+            .timeout_ms = 60 * 1000,          // Convert seconds to milliseconds
+            .idle_core_mask = 1 << 1,         // Monitor core 1 only
+            .trigger_panic = true             // Enable panic
+          };
+          // Initialize the WDT with the configuration structure
+          esp_task_wdt_init(&wdt_config);       // Pass the pointer to the configuration structure
+          esp_task_wdt_add(NULL);               // Add current thread to WDT watch    
+          esp_task_wdt_reset();                 // reset timer
+        #else
+          // pre v3 board manager assumed
+          esp_task_wdt_init(60, true);
+          esp_task_wdt_add(NULL);
+        #endif
     } else {
         Serial.println("Camera init succeeded");
 
@@ -693,18 +714,21 @@ void WifiSetup() {
       BME280::PresUnit presUnit(BME280::PresUnit_hPa);      // you can change Unit here https://github.com/finitespace/BME280#tempunit-enum
       return bme.pres(presUnit);
   } 
+
 #else
+
   float getBME280_hum() { 
-      return 0;
+      return 66;
       }
 
   float getBME280_temp() {
-      return 0
+      return 30;
       }
 
   float getBME280_pres(){ 
-      return 0;
+      return 29.88;
   } 
+
 #endif
 
 void setup() {
@@ -870,8 +894,7 @@ void setup() {
     // Initialise and set the lamp
     if (lampVal != -1) {
         #if defined(LAMP_PIN)
-            ledcSetup(lampChannel, pwmfreq, pwmresolution);  // configure LED PWM channel
-            ledcAttachPin(LAMP_PIN, lampChannel);            // attach the GPIO pin to the channel
+            ledcAttachChannel(LAMP_PIN, pwmfreq, pwmresolution, lampChannel); // configure LED PWM channel
             if (autoLamp) setLamp(0);                        // set default value
             else setLamp(lampVal);
          #endif
