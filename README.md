@@ -155,3 +155,5 @@ V4
 * OSD
   * Temperature/humidity/pressure sensor support (bme20,dht11)
 You can check the [enhancement list](https://github.com/easytarget/esp32-cam-webserver/issues?q=is%3Aissue+label%3Aenhancement) (past and present), and add any thoughts you may have there.
+
+![workflow status](https://github.com/ladvine/AcuSky/actions/workflows/arduino.yml/badge.svg)
