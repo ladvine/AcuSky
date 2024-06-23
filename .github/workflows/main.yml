@@ -1,7 +1,10 @@
 name: run-script
 on: push
-pull_request:
-branches: [ acusky ]
+  pull_request:
+    types:
+      - opened
+    branches:
+      - 'acusky/**'
 
 jobs:
   run_build:
