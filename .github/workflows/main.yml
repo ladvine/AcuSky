@@ -6,16 +6,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out repository
-        uses: actions/checkout@v4  
+      uses: actions/checkout@v4  
     - name: Make the script files executable
-        run: chmod +x ./scripts/prebuild.sh ./scripts/build.sh
+      run: chmod +x ./scripts/prebuild.sh ./scripts/build.sh
     - name: Run the scripts
-        run: |
-          ./scripts/prebuild.sh
-          ./scripts/build.sh
-        shell: bash
-   - name: Upload output file
-        uses: actions/upload-artifact@v4
-        with:
-          name: firmware.bin
-          path: .pio/build/esp32dev/firmware.bin
+      run: |
+        ./scripts/prebuild.sh
+        ./scripts/build.sh
+      shell: bash
+    - name: Upload output file
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware.bin
+        path: .pio/build/esp32dev/firmware.bin
