@@ -12,9 +12,8 @@
 #include "esp_int_wdt.h"
 #elif ESP_IDF_VERSION_MAJOR == 5
 #include "esp_private/esp_int_wdt.h"
-#endif
-
 #include "esp_private/periph_ctrl.h"
+#endif
 
 /* This sketch is a extension/expansion/reork of the 'official' ESP32 Camera example
  *  sketch from Expressif:
