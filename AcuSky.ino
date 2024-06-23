@@ -893,7 +893,12 @@ void setup() {
     // Initialise and set the lamp
     if (lampVal != -1) {
         #if defined(LAMP_PIN)
+#if ESP_IDF_VERSION_MAJOR == 4
+            ledcSetup(lampChannel, pwmfreq, pwmresolution);  // configure LED PWM channel
+            ledcAttachPin(LAMP_PIN, lampChannel);            // attach the GPIO pin to the channel
+#elif ESP_IDF_VERSION_MAJOR == 5
             ledcAttachChannel(LAMP_PIN, pwmfreq, pwmresolution, lampChannel); // configure LED PWM channel
+#endif
             if (autoLamp) setLamp(0);                        // set default value
             else setLamp(lampVal);
          #endif
