@@ -1,10 +1,5 @@
 name: run-script
 on: push
-  pull_request:
-    types:
-      - opened
-    branches:
-      - 'acusky/**'
 
 jobs:
   run_build:
