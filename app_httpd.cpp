@@ -23,6 +23,7 @@
 #include "esp_int_wdt.h"
 #elif ESP_IDF_VERSION_MAJOR == 5
 #include "esp_private/esp_int_wdt.h"
+#include "esp_private/periph_ctrl.h"
 #endif
 
 #include "index_ov2640.h"
@@ -32,7 +33,6 @@
 #include "src/favicons.h"
 #include "src/logo.h"
 #include "storage.h"
-#include "esp_private/periph_ctrl.h"
 
 //#define HAS_BME280     here and in esp32-cam-webserver.ino  to include the function
 #define HAS_BME280
