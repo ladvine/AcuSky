@@ -9,9 +9,12 @@ jobs:
       uses: actions/checkout@v4  
     - name: Make the script files executable
       run: chmod +x ./scripts/prebuild.sh ./scripts/build.sh
-    - name: Run the scripts
+    - name: Run pre-build script
       run: |
         ./scripts/prebuild.sh
+      shell: bash
+    - name: Run build script
+      run: |
         ./scripts/build.sh
       shell: bash
     - name: Upload output file
