@@ -15,10 +15,15 @@
 #include <esp_http_server.h>
 #include <esp_timer.h>
 #include <esp_camera.h>
-#include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
 #include <Arduino.h>
 #include <WiFi.h>
+
+#if ESP_IDF_VERSION_MAJOR == 4
+#include "esp_int_wdt.h"
+#elif ESP_IDF_VERSION_MAJOR == 5
+#include "esp_private/esp_int_wdt.h"
+#endif
 
 #include "index_ov2640.h"
 #include "index_ov3660.h"
@@ -27,8 +32,9 @@
 #include "src/favicons.h"
 #include "src/logo.h"
 #include "storage.h"
+#include "esp_private/periph_ctrl.h"
 
-// #define HAS_BME280     here and in esp32-cam-webserver.ino  to include the function
+//#define HAS_BME280     here and in esp32-cam-webserver.ino  to include the function
 #define HAS_BME280
 
 
@@ -426,8 +432,22 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     }
     else if(!strcmp(variable, "reboot")) {
         if (lampVal != -1) setLamp(0); // kill the lamp; otherwise it can remain on during the soft-reboot
-        esp_task_wdt_init(3,true);  // schedule a a watchdog panic event for 3 seconds in the future
-        esp_task_wdt_add(NULL);
+        #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR == 3  
+          // v3 board manager detected
+          // Create and initialize the watchdog timer(WDT) configuration structure
+          esp_task_wdt_config_t wdt_config = {
+            .timeout_ms = 3 * 1000,           // Convert seconds to milliseconds
+            .idle_core_mask = 1 << 1,         // Monitor core 1 only
+            .trigger_panic = true             // Enable panic
+          };
+          // Initialize the WDT with the configuration structure
+          esp_task_wdt_reconfigure(&wdt_config);       // Pass the pointer to the configuration structure
+          esp_task_wdt_add(NULL);                      // Add current thread to WDT watch    
+        #else
+          // pre v3 board manager assumed
+          esp_task_wdt_init(3,true);  // schedule a a watchdog panic event for 3 seconds in the future
+          esp_task_wdt_add(NULL);
+        #endif
         periph_module_disable(PERIPH_I2C0_MODULE); // try to shut I2C down properly
         periph_module_disable(PERIPH_I2C1_MODULE);
         periph_module_reset(PERIPH_I2C0_MODULE);
