@@ -67,7 +67,7 @@
  *  #define HAS_BME280     here and in app_httpd.cpp  to include the function
 */ 
 
-//#define HAS_BME280
+#define HAS_BME280
 
 
 // Upstream version string
@@ -254,7 +254,12 @@ String critERR = "";
 #if defined(HAS_BME280)
 // (set these in myconfig.h)
 
-  #include <BME280I2C.h>
+  /*
+  * BME280 Source code included from:
+  * https://github.com/finitespace/BME280
+  *
+  */
+  #include "src/bme280/BME280I2C.h"
   #include <Wire.h>        
 
   #define I2C_SDA 14

@@ -8,7 +8,8 @@
 /*
  *    WiFi Settings
  */
-struct station stationList[] = {{"ghome","nightelf123", true}};
+struct station stationList[] = {{"ghome","nightelf123", true},
+                                {"BabuHome","nibinbabu", true}};
 
 /*
  * You can extend the stationList[] above with additional SSID+Password pairs
