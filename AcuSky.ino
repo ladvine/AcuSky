@@ -55,19 +55,20 @@
 
 
 /*
- *  use of BME280 Sensor on ESPCAM32, need https://github.com/finitespace/BME280 LIB to run, please install with Arduion LIB Manager
- *     
+ *  use of BME280 Sensor on ESPCAM32, need https://github.com/finitespace/BME280 LIB
+ *  use of AHT10 Sensor on ESPCAM32, need https://github.com/enjoyneering/AHT10/ LIB
+ *   
  *     Connection diagram, can be change in main source code
- *     ESP32CAM    --  BME280 Sensor 
+ *     ESP32CAM    --  BME280, AHT10 Sensor
  *     GPIO 14     ->  SDA    
  *     GPIO 15     ->  SCL
  *     GND         ->  GND
  *     5V          ->  VIN     (3.3V was not working ???
  *
- *  #define HAS_BME280     here and in app_httpd.cpp  to include the function
+ *  #define HAS_SENSORS     here and in app_httpd.cpp  to include the function
 */ 
 
-#define HAS_BME280
+#define HAS_SENSORS
 
 
 // Upstream version string
@@ -251,7 +252,7 @@ const int pwmMax = pow(2,pwmresolution)-1;
 String critERR = "";
 
 
-#if defined(HAS_BME280)
+#if defined(HAS_SENSORS)
 // (set these in myconfig.h)
 
   /*
@@ -260,6 +261,13 @@ String critERR = "";
   *
   */
   #include "src/bme280/BME280I2C.h"
+
+  /*
+  * AHT10 Source code included from:
+  * https://github.com/enjoyneering/AHT10/
+  *
+  */
+  #include "src/aht10/AHT10.h"
   #include <Wire.h>        
 
   #define I2C_SDA 14
@@ -277,6 +285,8 @@ String critERR = "";
    BME280I2C::I2CAddr_0x76 // I2C address. I2C specific.
   );
   BME280I2C bme(settings);
+
+  AHT10 esp32_aht10(AHT10_ADDRESS_0X38);
 #endif
 
 // Debug flag for stream and capture data
@@ -311,7 +321,8 @@ void handleSerial() {
 void flashLED(int flashtime) {
 #if defined(LED_PIN)                // If we have it; flash it.
     digitalWrite(LED_PIN, LED_ON);  // On at full power.
-    delay(flashtime);               // delay
+    delay(flashtime);              
+     // delay
     digitalWrite(LED_PIN, LED_OFF); // turn Off
 #else
     return;                         // No notifcation LED, do nothing, no delay
@@ -703,10 +714,14 @@ void WifiSetup() {
 }
 
 
-#if defined(HAS_BME280)
+#if defined(HAS_SENSORS)
 
   float getBME280_hum() { 
-      return bme.hum();
+      if (esp32_aht10.readRawData() != AHT10_ERROR)
+      {
+        return esp32_aht10.readTemperature(AHT10_USE_READ_DATA);
+      }
+      return 0;
       }
 
   float getBME280_temp() {
@@ -749,7 +764,7 @@ void setup() {
     Serial.println();
 
 
-#if defined(HAS_BME280) 
+#if defined(HAS_SENSORS) 
   Wire.begin(I2C_SDA , I2C_SCL);
     while(!bme.begin())
     {
@@ -771,6 +786,14 @@ void setup() {
    // Change some settings before using.
     settings.tempOSR = BME280::OSR_X4;
     bme.setSettings(settings);
+
+    delay(AHT10_POWER_ON_DELAY);    //wait for AHT10 sensor to initialize 
+    Wire.setClock(100000);          //experimental! ESP32 I2C bus speed: 50kHz..400kHz/50000..400000, default 100000
+    //Wire.setClockStretchLimit(230); //experimental! default 230usec
+    esp32_aht10.softReset();
+
+    Serial.println(F("AHT10 OK"));
+
 #endif
 
     // Warn if no PSRAM is detected (typically user error with board selection in the IDE)

@@ -34,8 +34,8 @@
 #include "src/logo.h"
 #include "storage.h"
 
-//#define HAS_BME280     here and in esp32-cam-webserver.ino  to include the function
-#define HAS_BME280
+//#define HAS_SENSORS     here and in esp32-cam-webserver.ino  to include the function
+#define HAS_SENSORS
 
 
 // Functions from the main .ino
@@ -101,7 +101,7 @@ uint8_t temprature_sens_read();
 }
 #endif
 
-#if defined (HAS_BME280)
+#if defined (HAS_SENSORS)
 // external function to get the values from sensor
 extern float getBME280_hum();
 extern float getBME280_temp();
@@ -743,7 +743,7 @@ static esp_err_t index_handler(httpd_req_t *req){
         if (critERR.length() > 0) return error_handler(req);
         httpd_resp_set_type(req, "text/html");
         httpd_resp_set_hdr(req, "Content-Encoding", "identity");
-#if defined(HAS_BME280)        
+#if defined(HAS_SENSORS)        
         return httpd_resp_send(req, (const char *)index_simple_sensor_html, HTTPD_RESP_USE_STRLEN);
 #else
         return httpd_resp_send(req, (const char *)index_simple_html, HTTPD_RESP_USE_STRLEN);   
@@ -779,7 +779,7 @@ static esp_err_t index_handler(httpd_req_t *req){
     }
 }
 
-#if defined(HAS_BME280) 
+#if defined(HAS_SENSORS) 
 static esp_err_t readSensor_handler(httpd_req_t *req){
     flashLED(75);
     httpd_resp_set_type(req, "text/plane");
@@ -896,7 +896,7 @@ void startCameraServer(int hPort, int sPort){
         .handler   = error_handler,
         .user_ctx  = NULL
     };
-#if defined(HAS_BME280)    
+#if defined(HAS_SENSORS)    
     httpd_uri_t readSensor_uri = {
         .uri       = "/readSensor",
         .method    = HTTP_GET,
@@ -925,7 +925,7 @@ void startCameraServer(int hPort, int sPort){
         httpd_register_uri_handler(camera_httpd, &logo_svg_uri);
         httpd_register_uri_handler(camera_httpd, &dump_uri);
         httpd_register_uri_handler(camera_httpd, &stop_uri);
-#if defined(HAS_BME280)
+#if defined(HAS_SENSORS)
         httpd_register_uri_handler(camera_httpd, &readSensor_uri);
 #endif        
     }
