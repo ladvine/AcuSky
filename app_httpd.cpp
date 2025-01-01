@@ -18,6 +18,7 @@
 #include <esp_task_wdt.h>
 #include <Arduino.h>
 #include <WiFi.h>
+#include <sstream>
 
 #if ESP_IDF_VERSION_MAJOR == 4
 #include "esp_int_wdt.h"
