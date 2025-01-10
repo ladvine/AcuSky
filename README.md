@@ -1,3 +1,10 @@
+# IMPORTANT!
+This is a Old and rather Obsolete sketch; it only works with a very old version of the ESP32 Arduino core (2.0.2) and is missing all the improvements that espressif have made since then..
+
+It is also quite popular (Hi YouTubers!!) so I do not simply want to 'hard abandon' it without giving people a clue about where to go next..!
+
+I am in the process of archiving it; expect some additional instructions and links to alternatives to appear here soon.
+
 # ESP32-CAM example revisited. &nbsp;&nbsp;&nbsp; <span title="Master branch build status">[![CI Status](https://travis-ci.com/easytarget/esp32-cam-webserver.svg?branch=master)](https://travis-ci.com/github/easytarget/esp32-cam-webserver)</span> &nbsp;&nbsp; <span title="ESP EYE">![ESP-EYE logo](Docs/logo.svg)</span>
 
 ## Taken from the ESP examples, and expanded
