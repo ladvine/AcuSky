@@ -338,7 +338,7 @@ const uint8_t index_simple_sensor_html[] = R"=====(<!doctype html>
         <div id="wait-settings" style="float:left;" class="loader" title="Waiting for camera settings to load"></div>
       </div>
       <div class="card">
-      Sensor Hum: <span id="HUMValue">0</span> &#037,  Temp: <span id="TempValue">0</span> &#8451,  Pres: <span id="PresValue">0</span> hPa
+      Sensor Hum: <span id="HUMValue">0</span> &#037,  Temp: <span id="TempValue">0</span> &#8451,  Pres: <span id="PresValue">0</span> hPa,  Gas: <span id="GasValue">0</span> ppm
       </div>
       <div id="content">
         <div class="hidden" id="sidebar">
@@ -623,13 +623,15 @@ function getData() {
   xhttp.onreadystatechange = function() {
     if (this.readyState == 4 && this.status == 200) {
 
-      const sensorValues = this.responseText.split('#',3);
+      const sensorValues = this.responseText.split('#',4);
       document.getElementById("HUMValue").innerHTML =
       sensorValues[0];
        document.getElementById("TempValue").innerHTML =
        sensorValues[1];
        document.getElementById("PresValue").innerHTML =
        sensorValues[2];
+       document.getElementById("GasValue").innerHTML =
+       sensorValues[3];
     }
   };
   xhttp.open("GET", "readSensor", true);

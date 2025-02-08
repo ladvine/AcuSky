@@ -107,6 +107,7 @@ uint8_t temprature_sens_read();
 extern float getBME280_hum();
 extern float getBME280_temp();
 extern float getBME280_pres();
+extern float getMQ_aq();
 
 #endif
 
@@ -787,8 +788,9 @@ static esp_err_t readSensor_handler(httpd_req_t *req){
     float hum_result = getBME280_hum();
     float temp_result = getBME280_temp();
     float pres_result = getBME280_pres();
+    float gas_result = getMQ_aq();
     
-    String valuesStrg =  String(hum_result) + '#'+ String(temp_result) + '#' + String(pres_result) + '#';
+    String valuesStrg =  String(hum_result) + '#'+ String(temp_result) + '#' + String(pres_result) + '#' +  String(gas_result) + '#';
     int strgLength = valuesStrg.length();
     char values_as_char[strgLength];
     valuesStrg.toCharArray(values_as_char, strgLength);
