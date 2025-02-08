@@ -270,6 +270,8 @@ String critERR = "";
   #include "src/aht10/AHT10.h"
   #include <Wire.h>        
 
+  #define GAS_PIN 13 // ESP32's pin GPIO13 connected to AO pin of the MQ2 sensor
+
   #define I2C_SDA 14
   #define I2C_SCL 15
   #define I2C_Freq 400000
@@ -722,32 +724,40 @@ void WifiSetup() {
         return esp32_aht10.readTemperature(AHT10_USE_READ_DATA);
       }
       return 0;
-      }
+    }
 
   float getBME280_temp() {
       BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);   // you can change Unit to TempUnit_Fahrenheit 
       return bme.temp(tempUnit);
-      }
+    }
 
   float getBME280_pres(){ 
       BME280::PresUnit presUnit(BME280::PresUnit_hPa);      // you can change Unit here https://github.com/finitespace/BME280#tempunit-enum
       return bme.pres(presUnit);
-  } 
+    }
+
+  float getMQ_aq(){ 
+      return analogRead(GAS_PIN);
+    }
 
 #else
 
   float getBME280_hum() { 
-      return 66;
-      }
+    return 66;
+  }
 
   float getBME280_temp() {
-      return 30;
-      }
+    return 30;
+  }
 
   float getBME280_pres(){ 
-      return 29.88;
+    return 29.88;
   } 
 
+
+  float getMQ_aq(){ 
+      return 300;
+    }
 #endif
 
 void setup() {
@@ -793,6 +803,10 @@ void setup() {
     esp32_aht10.softReset();
 
     Serial.println(F("AHT10 OK"));
+
+    // set the ADC attenuation to 11 dB (up to ~3.3V input)
+    analogSetAttenuation(ADC_11db);
+    Serial.println("Warming up the MQ2 sensor");
 
 #endif
 
