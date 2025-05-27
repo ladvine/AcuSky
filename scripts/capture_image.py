@@ -1,5 +1,54 @@
 import requests
 import datetime
+import os
+# includes for gdrive sync
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from apiclient.http import MediaFileUpload,MediaIoBaseDownload
+
+# If modifying these scopes, delete the file token.json.
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+def upload_to_gdrive(filepath):
+  """Use Drive v3 API to upload to gdrive.
+  """
+  creds = None
+  # The file token.json stores the user's access and refresh tokens, and is
+  # created automatically when the authorization flow completes for the first
+  # time.
+  if os.path.exists("token.json"):
+    creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+  # If there are no (valid) credentials available, let the user log in.
+  if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+      creds.refresh(Request())
+    else:
+      flow = InstalledAppFlow.from_client_secrets_file(
+          "credentials.json", SCOPES
+      )
+      creds = flow.run_local_server(port=0)
+    # Save the credentials for the next run
+    with open("token.json", "w") as token:
+      token.write(creds.to_json())
+
+  try:
+    service = build("drive", "v3", credentials=creds)
+
+    file_metadata = {
+    'name': filepath,
+    'mimeType': 'image/png'
+    }
+    media = MediaFileUpload(filepath,
+                            mimetype='*/*',
+                            resumable=True)
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print ('File ID: ' + file.get('id'))
+  except HttpError as error:
+    # TODO(developer) - Handle errors from drive API.
+    print(f"An error occurred: {error}")
 
 def capture_image_and_sync(capture_url, sensor_url):
     """
@@ -8,7 +57,7 @@ def capture_image_and_sync(capture_url, sensor_url):
 
     Args:
         capture_url (str): The URL of the 'capture' API endpoint.
-                  Example: "http://192.168.0.103/capture"
+                  Example: "http://192.168.0.102/capture"
 
     Returns:
         Saves image with the sensor data and timestamp in filename.
@@ -33,14 +82,14 @@ def capture_image_and_sync(capture_url, sensor_url):
 
         # Check the response status code.  200 indicates success.
         if response.status_code == 200:
-            # Attempt to parse the JSON response.
+            # Upload file to gdrive
             try:
                 with open(filename, 'wb') as f:
                     f.write(response.content)
-
-            except:
-                print("Error: Exception caught !!")
-                print("Response text:", response.text)  # Print the raw text
+                    f.close()
+                upload_to_gdrive(filename)
+            except Exception as e:
+                print(f"Error: Exception caught !!: {e}")
         else:
             # Handle non-200 status codes.  Print the status code and text.
             print(f"Error: API request failed with status code {response.status_code}")
@@ -51,8 +100,8 @@ def capture_image_and_sync(capture_url, sensor_url):
 
 if __name__ == "__main__":
     # Invoke API endpoint.
-    capture_url = "http://192.168.0.103/capture"
-    sensor_url  = "http://192.168.0.103/readSensor"
+    capture_url = "http://192.168.0.101/capture"
+    sensor_url  = "http://192.168.0.101/readSensor"
 
     # Capture image and append sensor data
     capture_image_and_sync(capture_url, sensor_url)
