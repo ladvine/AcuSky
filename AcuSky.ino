@@ -55,12 +55,18 @@
 #endif
 
 // --- AcuSky: WiFiManager replaces stationList/WifiSetup ---
-// Global WiFiManager instance (must be global for wm.process() in loop())
+// Global WiFiManager instance (kept global so param_cam_name/param_xclk and
+// the saveParamsCallback lambda remain valid for the object's lifetime)
 WiFiManager wm;
 // NVS for camera name persistence
 Preferences devicePrefs;
 // WiFiManager portal parameter (global so wm never holds a dangling pointer)
 WiFiManagerParameter* param_cam_name = nullptr;
+// BUG FIX: param_xclk must also be heap-allocated and global. It was previously
+// a stack-local in WifiSetup() — wm.setSaveParamsCallback() captured it by
+// reference, so if the portal ever reopened after WifiSetup() returned
+// (e.g. via loop()'s wm.process()), the callback dereferenced freed stack memory.
+WiFiManagerParameter* param_xclk = nullptr;
 
 // Boot counter — incremented in stage0, exposed via /health endpoint
 uint32_t bootCount = 0;
@@ -451,6 +457,8 @@ void StartCamera() {
         }
     } else {
         Serial.println("Camera init succeeded");
+        cameraAvailable = true;  // BUG FIX: was never set true — all camera/stream
+                                  // endpoints permanently returned 503 even on success
 
         // Get a reference to the sensor
         sensor_t * s = esp_camera_sensor_get();
@@ -560,26 +568,26 @@ void stage0_powerSettle() {
         if (commaCount >= 5) { history = history.substring(i + 1); break; }
     }
     devicePrefs.putString(NVS_LAST_REASONS, history);
-    bool prevSkip = devicePrefs.getBool(NVS_SKIP_CAM, false);
     devicePrefs.end();
 
     Serial.printf("Boot count: %u\n", bootCount);
+
+    // FIX: simplified to a true one-shot. The previous logic persisted a
+    // "skip again next boot" NVS flag across the reset boundary, which could
+    // get permanently re-armed if any unrelated reset (SW reset during
+    // flashing, watchdog, etc.) happened to land while the flag was set —
+    // resulting in the camera being skipped on every single boot forever.
+    // Now: skip ONLY on the boot where brownout was the actual reset reason.
+    // Every other boot — including the very next one — attempts the camera.
     if (isBrownout) {
-        Serial.println(">> BROWNOUT: camera skipped this boot + next boot.");
+        Serial.println(">> BROWNOUT: camera skipped this boot only.");
         skipCameraThisBoot = true;
-        setSkipCameraFlag(true);
         critERR  = "<h1>PSU Recovery Boot</h1><hr>";
         critERR += "<p>Last reset was a brownout. Camera skipped to protect PSU.</p>";
         critERR += "<p>WiFi, OTA and sensors remain active.</p>";
     } else {
-        // Check if previous boot set the NVS skip flag (already read above)
-        if (prevSkip) {
-            Serial.println(">> Recovery boot after brownout: skipping camera once more.");
-            skipCameraThisBoot = true;
-            setSkipCameraFlag(false);  // next boot is fully normal
-        } else {
-            Serial.println(">> Normal boot.");
-        }
+        Serial.println(">> Normal boot.");
+        skipCameraThisBoot = false;
     }
 }
 
@@ -599,16 +607,37 @@ void WifiSetup() {
     // E7: XCLK frequency as portal parameter — key tuning knob for brownout issues
     char xclkStr[4];
     snprintf(xclkStr, sizeof(xclkStr), "%lu", xclk);
-    WiFiManagerParameter param_xclk("xclk", "XCLK MHz (2=low-power, 8=default, 20=fast)", xclkStr, 3);
+    // BUG FIX: heap-allocated like param_cam_name — was a stack local, causing
+    // a dangling reference if the portal reopened after WifiSetup() returned.
+    if (param_xclk) delete param_xclk;
+    param_xclk = new WiFiManagerParameter("xclk", "XCLK MHz (2=low-power, 8=default, 20=fast)", xclkStr, 3);
 
     wm.addParameter(param_cam_name);
-    wm.addParameter(&param_xclk);
+    wm.addParameter(param_xclk);
     wm.setDebugOutput(false);
     wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_SEC);
-    wm.setConfigPortalBlocking(false);
+    // Without this, autoConnect() can hang indefinitely while attempting to
+    // connect with SAVED credentials if the router is slow/unreachable —
+    // separate from, and before, the config-portal-timeout logic below ever
+    // gets a chance to run. This is the library author's documented fix for
+    // exactly this class of hang: "If trying to connect ends up in an
+    // endless loop, try setConnectTimeout(60) before autoConnect()."
+    wm.setConnectTimeout(30);
     WiFi.setSleep(false);
-    // Reduce TX power during connect to lower current spike
-    WiFi.setTxPower(WIFI_POWER_11dBm);
+    // NOTE: WiFi.setTxPower() removed from here — it was being called before
+    // wm.autoConnect() initializes the WiFi radio/driver (WiFi.mode(), etc).
+    // Calling setTxPower() on an uninitialized radio can hang the driver.
+    // TX power is now only adjusted around camera init (StartCamera()),
+    // after WiFi is already confirmed connected.
+    //
+    // NOTE: setConfigPortalBlocking(false) + manual wm.process() polling was
+    // removed. That combination is a known source of unreliable/hanging AP
+    // startup in WiFiManager (the portal sometimes doesn't come up cleanly
+    // in non-blocking mode). autoConnect() in its default BLOCKING mode
+    // already does exactly what headless provisioning needs: it tries the
+    // saved network first, and if that fails it automatically starts the
+    // "AcuSky-Setup" AP + captive portal and waits there until the user
+    // configures WiFi or the portal timeout below is hit.
 
     wm.setAPCallback([](WiFiManager* w) {
         Serial.printf("Config portal open: SSID='AcuSky-Setup' IP=%s\n",
@@ -624,7 +653,7 @@ void WifiSetup() {
             saveDevicePrefs(myName);
         }
         // E7: Save XCLK from portal
-        int newXclk = atoi(param_xclk.getValue());
+        int newXclk = atoi(param_xclk->getValue());
         if (newXclk >= 2 && newXclk <= 20) {
             xclk = newXclk;
             devicePrefs.begin(NVS_NS, false);
@@ -634,25 +663,20 @@ void WifiSetup() {
         }
     });
 
+    // Blocking call: returns true if connected via saved credentials, or
+    // after the user successfully configures WiFi through the portal.
+    // Returns false only if the portal timed out with no configuration.
     bool connected = wm.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD);
 
     if (!connected) {
-        // Not immediately connected — portal may be open; poll until connected or timeout
-        Serial.println("Portal open, waiting for configuration...");
-        unsigned long portalStart = millis();
-        while (WiFi.status() != WL_CONNECTED) {
-            wm.process();
-            delay(100);
-            if (millis() - portalStart > (unsigned long)WIFI_PORTAL_TIMEOUT_SEC * 1000UL) {
-                Serial.printf("Portal timed out. Sleeping %ds then retrying.\n", WIFI_DEEP_SLEEP_SEC);
-                flashLED(2000);
-                esp_sleep_enable_timer_wakeup((uint64_t)WIFI_DEEP_SLEEP_SEC * 1000000ULL);
-                esp_deep_sleep_start();
-            }
-        }
+        Serial.printf("Portal timed out after %ds. Sleeping %ds then retrying.\n",
+                      WIFI_PORTAL_TIMEOUT_SEC, WIFI_DEEP_SLEEP_SEC);
+        flashLED(2000);
+        esp_sleep_enable_timer_wakeup((uint64_t)WIFI_DEEP_SLEEP_SEC * 1000000ULL);
+        esp_deep_sleep_start();
     }
 
-    // Connected — restore full TX power
+    // WiFi confirmed connected — explicitly set full TX power for best signal/throughput
     delay(200);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     accesspoint = false;
@@ -871,24 +895,30 @@ void setup() {
 void loop() {
     if (otaEnabled) ArduinoOTA.handle();
 
-    // WiFiManager handles reconnection non-blocking
-    wm.process();
-
     handleSerial();
 
-    // WiFi status monitoring — checked every 5s
+    // WiFi status monitoring — checked every 5s.
+    // NOTE: ESP32's built-in WiFi auto-reconnect is NOT reliable for all
+    // disconnect reasons (see espressif/arduino-esp32 issue #7210 and
+    // multiple community reports of it silently failing to reconnect).
+    // We explicitly call WiFi.reconnect() here rather than relying on it.
     static unsigned long lastWifiCheck = 0;
     static bool wifiWasUp = true;
     if (millis() - lastWifiCheck > 5000) {
         lastWifiCheck = millis();
         bool wifiNow = (WiFi.status() == WL_CONNECTED);
         if (wifiWasUp && !wifiNow) {
-            Serial.println("WiFi disconnected, reconnecting...");
+            Serial.println("WiFi disconnected, attempting reconnect...");
+            WiFi.reconnect();
             wifiWasUp = false;
         } else if (!wifiWasUp && wifiNow) {
             ip = WiFi.localIP(); calcURLs();
             Serial.printf("WiFi reconnected: %d.%d.%d.%d\n", ip[0],ip[1],ip[2],ip[3]);
             wifiWasUp = true;
+        } else if (!wifiWasUp && !wifiNow) {
+            // Still disconnected after 5s — retry
+            Serial.println("WiFi still disconnected, retrying...");
+            WiFi.reconnect();
         }
     }
 
