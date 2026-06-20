@@ -5,6 +5,7 @@
  *   Defaults to AI-THINKER CAM module
  *
  */
+#define CAMERA_MODEL_AI_THINKER
 #if defined(CAMERA_MODEL_AI_THINKER)
   //
   // AI Thinker
