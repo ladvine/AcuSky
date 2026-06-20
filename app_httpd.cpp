@@ -18,7 +18,7 @@
 #include <esp_task_wdt.h>
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiManager.h>
+#include "src/WiFiManager/WiFiManager.h"
 #include <sstream>
 
 #if ESP_IDF_VERSION_MAJOR == 4
