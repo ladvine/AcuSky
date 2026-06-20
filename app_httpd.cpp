@@ -18,6 +18,7 @@
 #include <esp_task_wdt.h>
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <sstream>
 
 #if ESP_IDF_VERSION_MAJOR == 4
@@ -34,10 +35,10 @@
 #include "src/favicons.h"
 #include "src/logo.h"
 #include "storage.h"
+#include "myconfig.h"   // shared defines: HAS_SENSORS, NVS keys, WIFI_AP_NAME etc.
+#include <Preferences.h>
 
-//#define HAS_SENSORS     here and in esp32-cam-webserver.ino  to include the function
-#define HAS_SENSORS
-
+// HAS_SENSORS is defined in myconfig.h — do not define here
 
 // Functions from the main .ino
 extern void flashLED(int flashtime);
@@ -77,6 +78,13 @@ extern bool otaEnabled;
 extern char otaPassword[];
 extern unsigned long xclk;
 extern int sensorPID;
+// --- AcuSky additions ---
+extern bool cameraAvailable;
+extern bool sensorsAvailable;
+extern WiFiManager wm;
+extern Preferences devicePrefs;   // E1: for boot count in dump_handler
+extern uint32_t bootCount;        // E5/E8: for health and status endpoints
+// NVS keys come from myconfig.h via #include above
 
 typedef struct {
         httpd_req_t *req;
@@ -97,7 +105,11 @@ bool streamKill;
 #ifdef __cplusplus
 extern "C" {
 #endif
+// temprature_sens_read: misspelled Espressif internal API, removed in IDF5
+// Only declare and use on IDF4; return neutral values on IDF5
+#if ESP_IDF_VERSION_MAJOR < 5
 uint8_t temprature_sens_read();
+#endif
 #ifdef __cplusplus
 }
 #endif
@@ -125,7 +137,7 @@ void serialDump() {
     Serial.printf("ESP sdk: %s\r\n", ESP.getSdkVersion());
     if (otaEnabled) {
          if (strlen(otaPassword) != 0) {
-            Serial.printf("OTA: Enabled, Password: %s\n\r", otaPassword);
+            Serial.printf("OTA: Enabled, Password: [set]\n\r");
          } else {
             Serial.printf("OTA: Enabled, No Password! (insecure)\n\r");
          }
@@ -133,13 +145,8 @@ void serialDump() {
         Serial.printf("OTA: Disabled\n\r");
     }
     // Network
-    if (accesspoint) {
-        if (captivePortal) {
-            Serial.printf("WiFi Mode: AccessPoint with captive portal\r\n");
-        } else {
-            Serial.printf("WiFi Mode: AccessPoint\r\n");
-        }
-        Serial.printf("WiFi SSID: %s\r\n", apName);
+    if (wm.getConfigPortalActive()) {
+        Serial.printf("WiFi Mode: Config Portal (SSID: %s)\r\n", apName);
     } else {
         Serial.printf("WiFi Mode: Client\r\n");
         String ssidName = WiFi.SSID();
@@ -149,10 +156,8 @@ void serialDump() {
         Serial.printf("WiFi BSSID: %s\r\n", bssid.c_str());
     }
     Serial.printf("WiFi IP address: %d.%d.%d.%d\r\n", ip[0], ip[1], ip[2], ip[3]);
-    if (!accesspoint) {
-        Serial.printf("WiFi Netmask: %d.%d.%d.%d\r\n", net[0], net[1], net[2], net[3]);
-        Serial.printf("WiFi Gateway: %d.%d.%d.%d\r\n", gw[0], gw[1], gw[2], gw[3]);
-    }
+    Serial.printf("WiFi Netmask: %d.%d.%d.%d\r\n", net[0], net[1], net[2], net[3]);
+    Serial.printf("WiFi Gateway: %d.%d.%d.%d\r\n", gw[0], gw[1], gw[2], gw[3]);
     Serial.printf("WiFi Http port: %i, Stream port: %i\r\n", httpPort, streamPort);
     byte mac[6];
     WiFi.macAddress(mac);
@@ -163,8 +168,12 @@ void serialDump() {
     int upHours = int64_t(floor(sec/3600)) % 24;
     int upMin = int64_t(floor(sec/60)) % 60;
     int upSec = sec % 60;
-    int McuTc = (temprature_sens_read() - 32) / 1.8; // celsius
-    int McuTf = temprature_sens_read(); // fahrenheit
+    int McuTc = 0;
+    int McuTf = 32;
+    #if ESP_IDF_VERSION_MAJOR < 5
+    McuTc = (temprature_sens_read() - 32) / 1.8; // celsius
+    McuTf = temprature_sens_read(); // fahrenheit
+    #endif
     Serial.printf("System up: %" PRId64 ":%02i:%02i:%02i (d:h:m:s)\r\n", upDays, upHours, upMin, upSec);
     Serial.printf("Active streams: %i, Previous streams: %lu, Images captured: %lu\r\n", streamCount, streamsServed, imagesServed);
     Serial.printf("CPU Freq: %i MHz, Xclk Freq: %i MHz\r\n", ESP.getCpuFreqMHz(), xclk);
@@ -194,6 +203,12 @@ void serialDump() {
 }
 
 static esp_err_t capture_handler(httpd_req_t *req){
+    // C2: return 503 if camera is not available
+    if (!cameraAvailable) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req, "Camera unavailable. Check power supply and ribbon cable.");
+    }
     camera_fb_t * fb = NULL;
     esp_err_t res = ESP_OK;
 
@@ -241,6 +256,12 @@ static esp_err_t capture_handler(httpd_req_t *req){
 }
 
 static esp_err_t stream_handler(httpd_req_t *req){
+    // C2: return 503 if camera is not available
+    if (!cameraAvailable) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req, "Camera unavailable. Check power supply and ribbon cable.");
+    }
     camera_fb_t * fb = NULL;
     esp_err_t res = ESP_OK;
     size_t _jpg_buf_len = 0;
@@ -307,15 +328,10 @@ static esp_err_t stream_handler(httpd_req_t *req){
             free(_jpg_buf);
             _jpg_buf = NULL;
         }
-        if(res != ESP_OK){
-            // This is the error exit point from the stream loop.
-            // We end the stream here only if a Hard failure has been encountered or the connection has been interrupted.
-            Serial.printf("Stream failed, code = %i : %s\r\n", res, esp_err_to_name(res));
-            break;
-        }
-        if((res != ESP_OK) || streamKill){
-            // We end the stream here when a kill is signalled.
-            Serial.printf("Stream killed\r\n");
+        if(res != ESP_OK || streamKill){
+            // H4: merged — streamKill was dead code after the error break above
+            if (streamKill) Serial.printf("Stream killed\r\n");
+            else Serial.printf("Stream failed, code = %i : %s\r\n", res, esp_err_to_name(res));
             break;
         }
         int64_t frame_time = esp_timer_get_time() - last_frame;
@@ -373,12 +389,32 @@ static esp_err_t cmd_handler(httpd_req_t *req){
         return ESP_FAIL;
     }
 
-    if (critERR.length() > 0) return httpd_resp_send_500(req);
-
     int val = atoi(value);
-    sensor_t * s = esp_camera_sensor_get();
     int res = 0;
-    if(!strcmp(variable, "framesize")) {
+
+    // Camera-specific commands: blocked when camera is unavailable
+    bool isCameraCmd = (
+        !strcmp(variable, "framesize")     || !strcmp(variable, "quality")    ||
+        !strcmp(variable, "xclk")          || !strcmp(variable, "contrast")   ||
+        !strcmp(variable, "brightness")    || !strcmp(variable, "saturation") ||
+        !strcmp(variable, "gainceiling")   || !strcmp(variable, "colorbar")   ||
+        !strcmp(variable, "awb")           || !strcmp(variable, "agc")        ||
+        !strcmp(variable, "aec")           || !strcmp(variable, "hmirror")    ||
+        !strcmp(variable, "vflip")         || !strcmp(variable, "awb_gain")   ||
+        !strcmp(variable, "agc_gain")      || !strcmp(variable, "aec_value")  ||
+        !strcmp(variable, "aec2")          || !strcmp(variable, "dcw")        ||
+        !strcmp(variable, "bpc")           || !strcmp(variable, "wpc")        ||
+        !strcmp(variable, "raw_gma")       || !strcmp(variable, "lenc")       ||
+        !strcmp(variable, "special_effect")|| !strcmp(variable, "wb_mode")    ||
+        !strcmp(variable, "ae_level")
+    );
+    if (isCameraCmd) {
+        // H1: critERR only blocks camera commands — lamp/reboot/reset_wifi always work
+        if (critERR.length() > 0 || !cameraAvailable) return httpd_resp_send_500(req);
+        sensor_t * s = esp_camera_sensor_get();
+        if (!s) return httpd_resp_send_500(req);
+
+        if(!strcmp(variable, "framesize")) {
         if(s->pixformat == PIXFORMAT_JPEG) res = s->set_framesize(s, (framesize_t)val);
     }
     else if(!strcmp(variable, "quality")) res = s->set_quality(s, val);
@@ -405,7 +441,10 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     else if(!strcmp(variable, "special_effect")) res = s->set_special_effect(s, val);
     else if(!strcmp(variable, "wb_mode")) res = s->set_wb_mode(s, val);
     else if(!strcmp(variable, "ae_level")) res = s->set_ae_level(s, val);
-    else if(!strcmp(variable, "rotate")) myRotation = val;
+    else res = -1;
+    } else {
+    // Non-camera commands — always available regardless of camera state
+    if(!strcmp(variable, "rotate")) myRotation = val;
     else if(!strcmp(variable, "min_frame_time")) minFrameTime = val;
     else if(!strcmp(variable, "autolamp") && (lampVal != -1)) {
         autoLamp = val;
@@ -430,6 +469,17 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     }
     else if(!strcmp(variable, "clear_prefs")) {
         if (filesystem) removePrefs(SPIFFS);
+    }
+    else if(!strcmp(variable, "reset_wifi")) {
+        // Erase stored WiFi credentials; device reboots into AcuSky-Setup portal
+        Serial.println("WiFi reset requested via web UI");
+        if (lampVal != -1) setLamp(0);
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_sendstr(req, "WiFi credentials cleared. Connect to 'AcuSky-Setup' to reconfigure.");
+        delay(500);
+        wm.resetSettings();
+        ESP.restart();
+        return ESP_OK;
     }
     else if(!strcmp(variable, "reboot")) {
         if (lampVal != -1) setLamp(0); // kill the lamp; otherwise it can remain on during the soft-reboot
@@ -463,6 +513,7 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     else {
         res = -1;
     }
+    } // end else (non-camera commands)
     if(res){
         return httpd_resp_send_500(req);
     }
@@ -470,47 +521,72 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     return httpd_resp_send(req, NULL, 0);
 }
 
+// E5: Lightweight health endpoint — for monitoring, Home Assistant, watchdog scripts
+// Returns JSON: wifi, camera, sensors, uptime_sec, rssi, heap_free, boot_count
+static esp_err_t health_handler(httpd_req_t *req){
+    static char health_json[256];
+    int64_t upSec = esp_timer_get_time() / 1000000;
+    char * p = health_json;
+    *p++ = '{';
+    p+=sprintf(p, "\"wifi\":%s,",        (WiFi.status() == WL_CONNECTED) ? "true" : "false");
+    p+=sprintf(p, "\"camera\":%s,",      cameraAvailable  ? "true" : "false");
+    p+=sprintf(p, "\"sensors\":%s,",     sensorsAvailable ? "true" : "false");
+    p+=sprintf(p, "\"uptime_sec\":%" PRId64 ",", upSec);
+    p+=sprintf(p, "\"rssi\":%d,",        WiFi.RSSI());
+    p+=sprintf(p, "\"heap_free\":%u,",   ESP.getFreeHeap());
+    p+=sprintf(p, "\"boot_count\":%u",   bootCount);
+    *p++ = '}'; *p++ = 0;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, health_json, strlen(health_json));
+}
+
 static esp_err_t status_handler(httpd_req_t *req){
-    static char json_response[1024];
+    static char json_response[2048]; // increased from 1024; 30+ fields can exceed 1024
     char * p = json_response;
     *p++ = '{';
-    // Do not get attempt to get sensor when in error; causes a panic..
-    if (critERR.length() == 0) {
+    // Camera sensor fields: only when camera is available and sensor is valid
+    if (cameraAvailable) {
         sensor_t * s = esp_camera_sensor_get();
-        p+=sprintf(p, "\"lamp\":%d,", lampVal);
-        p+=sprintf(p, "\"autolamp\":%d,", autoLamp);
-        p+=sprintf(p, "\"min_frame_time\":%d,", minFrameTime);
-        p+=sprintf(p, "\"framesize\":%u,", s->status.framesize);
-        p+=sprintf(p, "\"quality\":%u,", s->status.quality);
-        p+=sprintf(p, "\"xclk\":%u,", xclk);
-        p+=sprintf(p, "\"brightness\":%d,", s->status.brightness);
-        p+=sprintf(p, "\"contrast\":%d,", s->status.contrast);
-        p+=sprintf(p, "\"saturation\":%d,", s->status.saturation);
-        p+=sprintf(p, "\"sharpness\":%d,", s->status.sharpness);
-        p+=sprintf(p, "\"special_effect\":%u,", s->status.special_effect);
-        p+=sprintf(p, "\"wb_mode\":%u,", s->status.wb_mode);
-        p+=sprintf(p, "\"awb\":%u,", s->status.awb);
-        p+=sprintf(p, "\"awb_gain\":%u,", s->status.awb_gain);
-        p+=sprintf(p, "\"aec\":%u,", s->status.aec);
-        p+=sprintf(p, "\"aec2\":%u,", s->status.aec2);
-        p+=sprintf(p, "\"ae_level\":%d,", s->status.ae_level);
-        p+=sprintf(p, "\"aec_value\":%u,", s->status.aec_value);
-        p+=sprintf(p, "\"agc\":%u,", s->status.agc);
-        p+=sprintf(p, "\"agc_gain\":%u,", s->status.agc_gain);
-        p+=sprintf(p, "\"gainceiling\":%u,", s->status.gainceiling);
-        p+=sprintf(p, "\"bpc\":%u,", s->status.bpc);
-        p+=sprintf(p, "\"wpc\":%u,", s->status.wpc);
-        p+=sprintf(p, "\"raw_gma\":%u,", s->status.raw_gma);
-        p+=sprintf(p, "\"lenc\":%u,", s->status.lenc);
-        p+=sprintf(p, "\"vflip\":%u,", s->status.vflip);
-        p+=sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
-        p+=sprintf(p, "\"dcw\":%u,", s->status.dcw);
-        p+=sprintf(p, "\"colorbar\":%u,", s->status.colorbar);
-        p+=sprintf(p, "\"cam_name\":\"%s\",", myName);
-        p+=sprintf(p, "\"code_ver\":\"%s\",", myVer);
-        p+=sprintf(p, "\"rotate\":\"%d\",", myRotation);
-        p+=sprintf(p, "\"stream_url\":\"%s\"", streamURL);
+        if (s) {  // null check: sensor_get() can return NULL even if init succeeded
+            p+=sprintf(p, "\"framesize\":%u,", s->status.framesize);
+            p+=sprintf(p, "\"quality\":%u,", s->status.quality);
+            p+=sprintf(p, "\"xclk\":%u,", xclk);
+            p+=sprintf(p, "\"brightness\":%d,", s->status.brightness);
+            p+=sprintf(p, "\"contrast\":%d,", s->status.contrast);
+            p+=sprintf(p, "\"saturation\":%d,", s->status.saturation);
+            p+=sprintf(p, "\"sharpness\":%d,", s->status.sharpness);
+            p+=sprintf(p, "\"special_effect\":%u,", s->status.special_effect);
+            p+=sprintf(p, "\"wb_mode\":%u,", s->status.wb_mode);
+            p+=sprintf(p, "\"awb\":%u,", s->status.awb);
+            p+=sprintf(p, "\"awb_gain\":%u,", s->status.awb_gain);
+            p+=sprintf(p, "\"aec\":%u,", s->status.aec);
+            p+=sprintf(p, "\"aec2\":%u,", s->status.aec2);
+            p+=sprintf(p, "\"ae_level\":%d,", s->status.ae_level);
+            p+=sprintf(p, "\"aec_value\":%u,", s->status.aec_value);
+            p+=sprintf(p, "\"agc\":%u,", s->status.agc);
+            p+=sprintf(p, "\"agc_gain\":%u,", s->status.agc_gain);
+            p+=sprintf(p, "\"gainceiling\":%u,", s->status.gainceiling);
+            p+=sprintf(p, "\"bpc\":%u,", s->status.bpc);
+            p+=sprintf(p, "\"wpc\":%u,", s->status.wpc);
+            p+=sprintf(p, "\"raw_gma\":%u,", s->status.raw_gma);
+            p+=sprintf(p, "\"lenc\":%u,", s->status.lenc);
+            p+=sprintf(p, "\"vflip\":%u,", s->status.vflip);
+            p+=sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
+            p+=sprintf(p, "\"dcw\":%u,", s->status.dcw);
+            p+=sprintf(p, "\"colorbar\":%u,", s->status.colorbar);
+        }
     }
+    // Non-camera fields: always present so UI always gets lamp/rotation/name/URL
+    p+=sprintf(p, "\"lamp\":%d,", lampVal);
+    p+=sprintf(p, "\"autolamp\":%d,", autoLamp);
+    p+=sprintf(p, "\"min_frame_time\":%d,", minFrameTime);
+    p+=sprintf(p, "\"cam_name\":\"%s\",", myName);
+    p+=sprintf(p, "\"code_ver\":\"%s\",", myVer);
+    p+=sprintf(p, "\"rotate\":\"%d\",", myRotation);
+    p+=sprintf(p, "\"stream_url\":\"%s\",", streamURL);
+    p+=sprintf(p, "\"active_streams\":%d,", streamCount);  // E8
+    p+=sprintf(p, "\"boot_count\":%u", bootCount);         // E8
     *p++ = '}';
     *p++ = 0;
     httpd_resp_set_type(req, "application/json");
@@ -560,7 +636,7 @@ static esp_err_t dump_handler(httpd_req_t *req){
     flashLED(75);
     Serial.println("\r\nDump requested via Web");
     serialDump();
-    static char dumpOut[2000] = "";
+    static char dumpOut[3500] = "";  // increased from 2000; full page with critERR can exceed 2000
     char * d = dumpOut;
     // Header
     d+= sprintf(d,"<html><head><meta charset=\"utf-8\">\n");
@@ -575,7 +651,7 @@ static esp_err_t dump_handler(httpd_req_t *req){
     if (critERR.length() > 0) {
         d+= sprintf(d,"%s<hr>\n", critERR.c_str());
     }
-    d+= sprintf(d,"<h1>ESP32 Cam Webserver</h1>\n");
+    d+= sprintf(d,"<h1>AcuSky</h1>\n");
     // Module
     d+= sprintf(d,"Name: %s<br>\n", myName);
     d+= sprintf(d,"Firmware: %s (base: %s)<br>\n", myVer, baseVersion);
@@ -583,15 +659,17 @@ static esp_err_t dump_handler(httpd_req_t *req){
     d+= sprintf(d,"Sketch Size: %i (total: %i, %.1f%% used)<br>\n", sketchSize, sketchSpace, sketchPct);
     d+= sprintf(d,"MD5: %s<br>\n", sketchMD5.c_str());
     d+= sprintf(d,"ESP sdk: %s<br>\n", ESP.getSdkVersion());
+    // E1: Boot diagnostics — bootCount is the in-RAM global (set once at boot in stage0),
+    // consistent with /health and /status. Only the reset-reason history needs NVS.
+    devicePrefs.begin(NVS_NS, true);
+    String dumpHistory = devicePrefs.getString(NVS_LAST_REASONS, "none");
+    devicePrefs.end();
+    d+= sprintf(d,"Boot count: %u<br>\n", bootCount);
+    d+= sprintf(d,"Last reset reasons (newest last): %s<br>\n", dumpHistory.c_str());
     // Network
     d+= sprintf(d,"<h2>WiFi</h2>\n");
-    if (accesspoint) {
-        if (captivePortal) {
-            d+= sprintf(d,"Mode: AccessPoint with captive portal<br>\n");
-        } else {
-            d+= sprintf(d,"Mode: AccessPoint<br>\n");
-        }
-        d+= sprintf(d,"SSID: %s<br>\n", apName);
+    if (wm.getConfigPortalActive()) {
+        d+= sprintf(d,"Mode: Config Portal (SSID: %s)<br>\n", apName);
     } else {
         d+= sprintf(d,"Mode: Client<br>\n");
         String ssidName = WiFi.SSID();
@@ -601,10 +679,8 @@ static esp_err_t dump_handler(httpd_req_t *req){
         d+= sprintf(d,"BSSID: %s<br>\n", bssid.c_str());
     }
     d+= sprintf(d,"IP address: %d.%d.%d.%d<br>\n", ip[0], ip[1], ip[2], ip[3]);
-    if (!accesspoint) {
-        d+= sprintf(d,"Netmask: %d.%d.%d.%d<br>\n", net[0], net[1], net[2], net[3]);
-        d+= sprintf(d,"Gateway: %d.%d.%d.%d<br>\n", gw[0], gw[1], gw[2], gw[3]);
-    }
+    d+= sprintf(d,"Netmask: %d.%d.%d.%d<br>\n", net[0], net[1], net[2], net[3]);
+    d+= sprintf(d,"Gateway: %d.%d.%d.%d<br>\n", gw[0], gw[1], gw[2], gw[3]);
     d+= sprintf(d,"Http port: %i, Stream port: %i<br>\n", httpPort, streamPort);
     byte mac[6];
     WiFi.macAddress(mac);
@@ -626,9 +702,12 @@ static esp_err_t dump_handler(httpd_req_t *req){
     int upHours = int64_t(floor(sec/3600)) % 24;
     int upMin = int64_t(floor(sec/60)) % 60;
     int upSec = sec % 60;
-    int McuTc = (temprature_sens_read() - 32) / 1.8; // celsius
-    int McuTf = temprature_sens_read(); // fahrenheit
-
+    int McuTc = 0;
+    int McuTf = 32;
+    #if ESP_IDF_VERSION_MAJOR < 5
+    McuTc = (temprature_sens_read() - 32) / 1.8; // celsius
+    McuTf = temprature_sens_read(); // fahrenheit
+    #endif
     d+= sprintf(d,"Up: %" PRId64 ":%02i:%02i:%02i (d:h:m:s)<br>\n", upDays, upHours, upMin, upSec);
     d+= sprintf(d,"Active streams: %i, Previous streams: %lu, Images captured: %lu<br>\n", streamCount, streamsServed, imagesServed);
     d+= sprintf(d,"CPU Freq: %i MHz, Xclk Freq: %i MHz<br>\n", ESP.getCpuFreqMHz(), xclk);
@@ -653,6 +732,8 @@ static esp_err_t dump_handler(httpd_req_t *req){
     d+= sprintf(d,"<button title=\"Instant Refresh; the page reloads every minute anyway\" onclick=\"location.replace(document.URL)\">Refresh</button>\n");
     d+= sprintf(d,"<button title=\"Force-stop all active streams on the camera module\" ");
     d+= sprintf(d,"onclick=\"let throwaway = fetch('stop');setTimeout(function(){\nlocation.replace(document.URL);\n}, 200);\">Kill Stream</button>\n");
+    d+= sprintf(d,"<button title=\"Erase saved WiFi credentials and reboot into setup portal\" ");
+    d+= sprintf(d,"onclick=\"if(confirm('Reset WiFi credentials and reboot?')){fetch('/control?var=reset_wifi&val=1')}\">Reset WiFi</button>\n");
     d+= sprintf(d,"<button title=\"Close this page\" onclick=\"javascript:window.close()\">Close</button>\n");
     d+= sprintf(d,"</div>\n</body>\n");
     // A javascript timer to refresh the page every minute.
@@ -732,10 +813,10 @@ static esp_err_t index_handler(httpd_req_t *req){
         free(buf);
     } else {
         // no target specified; default.
-        strcpy(view,default_index);
-        // If captive portal is active send that instead
-        if (captivePortal) {
-            strcpy(view,"portal");
+        strcpy(view, default_index);
+        // E10: If WiFiManager portal is active, redirect to portal page
+        if (wm.getConfigPortalActive()) {
+            strcpy(view, "portal");
         }
     }
 
@@ -783,17 +864,31 @@ static esp_err_t index_handler(httpd_req_t *req){
 #if defined(HAS_SENSORS) 
 static esp_err_t readSensor_handler(httpd_req_t *req){
     flashLED(75);
-    httpd_resp_set_type(req, "text/plane");
-    float hum_result = getBME280_hum();
-    float temp_result = getBME280_temp();
-    float pres_result = getBME280_pres();
-    
-    String valuesStrg =  String(hum_result) + '#'+ String(temp_result) + '#' + String(pres_result) + '#';
-    int strgLength = valuesStrg.length();
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    if (!sensorsAvailable) {
+        return httpd_resp_sendstr(req, "0#0#0#unavailable");
+    }
+
+    // E9: Cache sensor readings — read hardware max once per 10s.
+    // Protects I2C bus from aggressive polling and reduces stream latency spikes.
+    static float cached_hum  = 0;
+    static float cached_temp = 0;
+    static float cached_pres = 0;
+    static unsigned long lastSensorRead = 0;
+    if (millis() - lastSensorRead > 10000) {
+        cached_hum  = getBME280_hum();
+        cached_temp = getBME280_temp();
+        cached_pres = getBME280_pres();
+        lastSensorRead = millis();
+    }
+
+    String valuesStrg = String(cached_hum) + '#' + String(cached_temp) + '#' + String(cached_pres) + '#';
+    int strgLength = valuesStrg.length() + 1;
     char values_as_char[strgLength];
     valuesStrg.toCharArray(values_as_char, strgLength);
-    
-    return httpd_resp_send(req,  (const char *)values_as_char, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, (const char *)values_as_char, HTTPD_RESP_USE_STRLEN);
 }
 #endif
 
@@ -867,6 +962,12 @@ void startCameraServer(int hPort, int sPort){
         .handler   = stop_handler,
         .user_ctx  = NULL
     };
+    httpd_uri_t health_uri = {
+        .uri       = "/health",
+        .method    = HTTP_GET,
+        .handler   = health_handler,
+        .user_ctx  = NULL
+    };
     httpd_uri_t stream_uri = {
         .uri       = "/",
         .method    = HTTP_GET,
@@ -911,14 +1012,15 @@ void startCameraServer(int hPort, int sPort){
     config.ctrl_port = hPort;
     Serial.printf("Starting web server on port: '%d'\r\n", config.server_port);
     if (httpd_start(&camera_httpd, &config) == ESP_OK) {
-        if (critERR.length() > 0) {
-            httpd_register_uri_handler(camera_httpd, &error_uri);
-        } else {
-            httpd_register_uri_handler(camera_httpd, &index_uri);
-            httpd_register_uri_handler(camera_httpd, &cmd_uri);
-            httpd_register_uri_handler(camera_httpd, &status_uri);
-            httpd_register_uri_handler(camera_httpd, &capture_uri);
-        }
+        // Always register the real handlers — they each check critERR/cameraAvailable
+        // internally (index_handler, capture_handler) and degrade gracefully.
+        // This also allows E2's periodic camera recovery to work: if camera comes
+        // back up later, these handlers immediately reflect that without requiring
+        // startCameraServer() to be called again.
+        httpd_register_uri_handler(camera_httpd, &index_uri);
+        httpd_register_uri_handler(camera_httpd, &cmd_uri);
+        httpd_register_uri_handler(camera_httpd, &status_uri);
+        httpd_register_uri_handler(camera_httpd, &capture_uri);
         httpd_register_uri_handler(camera_httpd, &style_uri);
         httpd_register_uri_handler(camera_httpd, &favicon_16x16_uri);
         httpd_register_uri_handler(camera_httpd, &favicon_32x32_uri);
@@ -926,6 +1028,7 @@ void startCameraServer(int hPort, int sPort){
         httpd_register_uri_handler(camera_httpd, &logo_svg_uri);
         httpd_register_uri_handler(camera_httpd, &dump_uri);
         httpd_register_uri_handler(camera_httpd, &stop_uri);
+        httpd_register_uri_handler(camera_httpd, &health_uri);  // E5: always registered
 #if defined(HAS_SENSORS)
         httpd_register_uri_handler(camera_httpd, &readSensor_uri);
 #endif        
@@ -935,14 +1038,12 @@ void startCameraServer(int hPort, int sPort){
     config.ctrl_port = sPort;
     Serial.printf("Starting stream server on port: '%d'\r\n", config.server_port);
     if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-        if (critERR.length() > 0) {
-            httpd_register_uri_handler(camera_httpd, &error_uri);
-            httpd_register_uri_handler(camera_httpd, &viewerror_uri);
-        } else {
-            httpd_register_uri_handler(stream_httpd, &stream_uri);
-            httpd_register_uri_handler(stream_httpd, &info_uri);
-            httpd_register_uri_handler(stream_httpd, &streamviewer_uri);
-        }
+        // Always register real handlers — stream_handler checks cameraAvailable
+        // internally and returns 503 gracefully. This allows E2 camera recovery
+        // to work without needing startCameraServer() called again.
+        httpd_register_uri_handler(stream_httpd, &stream_uri);
+        httpd_register_uri_handler(stream_httpd, &info_uri);
+        httpd_register_uri_handler(stream_httpd, &streamviewer_uri);
         httpd_register_uri_handler(stream_httpd, &favicon_16x16_uri);
         httpd_register_uri_handler(stream_httpd, &favicon_32x32_uri);
         httpd_register_uri_handler(stream_httpd, &favicon_ico_uri);
