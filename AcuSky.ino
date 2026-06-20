@@ -8,7 +8,7 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "esp_system.h"
-#include <WiFiManager.h>
+#include "src/WiFiManager/WiFiManager.h"
 #include <Preferences.h>
 
 #if ESP_IDF_VERSION_MAJOR == 4
