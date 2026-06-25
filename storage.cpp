@@ -7,7 +7,7 @@ extern void flashLED(int flashtime);
 extern int myRotation;    // Rotation
 extern int lampVal;       // The current Lamp value
 extern bool autoLamp;     // Automatic lamp mode
-extern int xclk;          // Camera module clock speed
+extern unsigned long xclk; // Camera module clock speed
 extern int minFrameTime;  // Limits framerate
 
 /*
@@ -47,14 +47,14 @@ void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
 
 void dumpPrefs(fs::FS &fs){
   if (fs.exists(PREFERENCES_FILE)) {
-    // Dump contents for debug
     File file = fs.open(PREFERENCES_FILE, FILE_READ);
-    int countSize = 0;
-    while (file.available() && countSize <= PREFERENCES_MAX_SIZE) {
-        Serial.print(char(file.read()));
-        countSize++;
+    size_t size = file.size();
+    if (size > 0 && size <= PREFERENCES_MAX_SIZE) {
+        std::unique_ptr<char[]> buf(new char[size + 1]);
+        file.readBytes(buf.get(), size);
+        buf[size] = '\0';
+        Serial.println(buf.get());
     }
-    Serial.println("");
     file.close();
   } else {
     Serial.printf("%s not found, nothing to dump.\r\n", PREFERENCES_FILE);
@@ -63,8 +63,6 @@ void dumpPrefs(fs::FS &fs){
 
 void loadPrefs(fs::FS &fs){
   if (fs.exists(PREFERENCES_FILE)) {
-    // read file into a string
-    String prefs;
     Serial.printf("Loading preferences from file %s\r\n", PREFERENCES_FILE);
     File file = fs.open(PREFERENCES_FILE, FILE_READ);
     if (!file) {
@@ -78,17 +76,25 @@ void loadPrefs(fs::FS &fs){
       removePrefs(SPIFFS);
       return;
     }
-    while (file.available()) {
-        prefs += char(file.read());
-        if (prefs.length() > size) {
-          // corrupted SPIFFS files can return data beyond their declared size.
-          Serial.println("Preferences file failed to load properly, appears to be corrupt, removing");
-          removePrefs(SPIFFS);
-          return;
-        }
+    // Read entire file in one block — char-by-char was ~500 individual SPIFFS calls
+    std::unique_ptr<char[]> buf(new char[size + 1]);
+    size_t bytesRead = file.readBytes(buf.get(), size);
+    file.close();
+    if (bytesRead != size) {
+        Serial.println("Preferences file read incomplete, appears corrupt, removing");
+        removePrefs(SPIFFS);
+        return;
     }
+    buf[size] = '\0';
+    String prefs(buf.get());
     // get sensor reference
     sensor_t * s = esp_camera_sensor_get();
+    // C3: null check — camera may be unavailable; skip camera settings if so
+    if (!s) {
+        Serial.println("loadPrefs: camera sensor not available, skipping camera settings.");
+        dumpPrefs(SPIFFS);
+        return;
+    }
 
     // process local settings
     if (lampVal >= 0) {
@@ -127,8 +133,6 @@ void loadPrefs(fs::FS &fs){
     s->set_hmirror(s, jsonExtract(prefs, "hmirror").toInt());
     s->set_dcw(s, jsonExtract(prefs, "dcw").toInt());
     s->set_colorbar(s, jsonExtract(prefs, "colorbar").toInt());
-    // close the file
-    file.close();
     dumpPrefs(SPIFFS);
   } else {
     Serial.printf("Preference file %s not found; using system defaults.\r\n", PREFERENCES_FILE);
@@ -144,6 +148,22 @@ void savePrefs(fs::FS &fs){
   File file = fs.open(PREFERENCES_FILE, FILE_WRITE);
   static char json_response[1024];
   sensor_t * s = esp_camera_sensor_get();
+  // C3: null check — if camera unavailable, save only non-camera prefs
+  if (!s) {
+    Serial.println("savePrefs: camera sensor not available, saving non-camera settings only.");
+    char * p = json_response;
+    *p++ = '{';
+    p+=sprintf(p, "\"lamp\":%i,", lampVal);
+    p+=sprintf(p, "\"autolamp\":%u,", autoLamp);
+    p+=sprintf(p, "\"xclk\":%u,", xclk);
+    p+=sprintf(p, "\"min_frame_time\":%d,", minFrameTime);
+    p+=sprintf(p, "\"rotate\":\"%d\"", myRotation);
+    *p++ = '}'; *p++ = 0;
+    file.print(json_response);
+    file.close();
+    dumpPrefs(SPIFFS);
+    return;
+  }
   char * p = json_response;
   *p++ = '{';
   p+=sprintf(p, "\"lamp\":%i,", lampVal);
@@ -195,17 +215,26 @@ void removePrefs(fs::FS &fs) {
 
 void filesystemStart(){
   Serial.println("Starting internal SPIFFS filesystem");
-  while ( !SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED) ) {
-    // if we sit in this loop something is wrong;
-    // if no existing spiffs partition exists one should be automagically created.
-    Serial.println("SPIFFS Mount failed, this can happen on first-run initialisation");
+  int attempt = 0;
+  const int MAX_FS_RETRIES = 5;
+  while (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED) && attempt < MAX_FS_RETRIES) {
+    attempt++;
+    Serial.printf("SPIFFS Mount failed (attempt %d/%d)\r\n", attempt, MAX_FS_RETRIES);
     Serial.println("If it happens repeatedly check if a SPIFFS partition is present for your board?");
     for (int i=0; i<10; i++) {
-      flashLED(100); // Show SPIFFS failure
+      flashLED(100);
       delay(100);
     }
     delay(1000);
     Serial.println("Retrying..");
+  }
+  if (!SPIFFS.begin(false)) {
+    // H3: was infinite loop — now we give up and continue without filesystem
+    Serial.println("SPIFFS permanently unavailable — continuing without it.");
+    Serial.println("Camera settings will NOT persist across reboots.");
+    extern bool filesystem;
+    filesystem = false;
+    return;
   }
   listDir(SPIFFS, "/", 0);
 }
