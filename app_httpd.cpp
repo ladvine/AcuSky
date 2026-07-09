@@ -49,6 +49,7 @@ extern void printLocalTime(bool extraData);
 extern char myName[];
 extern char myVer[];
 extern char baseVersion[];
+extern char mdnsName[];
 extern IPAddress ip;
 extern IPAddress net;
 extern IPAddress gw;
@@ -595,12 +596,18 @@ static esp_err_t status_handler(httpd_req_t *req){
 }
 
 static esp_err_t info_handler(httpd_req_t *req){
-    static char json_response[256];
+    // Enhanced: returns stream_url, http_url, raw IP, and mDNS name
+    // so apps can auto-discover the camera without knowing the IP in advance.
+    // Hit http://acusky-cam.local/info from any device on the same network.
+    static char json_response[384];
     char * p = json_response;
     *p++ = '{';
-    p+=sprintf(p, "\"cam_name\":\"%s\",", myName);
-    p+=sprintf(p, "\"rotate\":\"%d\",", myRotation);
-    p+=sprintf(p, "\"stream_url\":\"%s\"", streamURL);
+    p+=sprintf(p, "\"cam_name\":\"%s\",",     myName);
+    p+=sprintf(p, "\"rotate\":\"%d\",",       myRotation);
+    p+=sprintf(p, "\"stream_url\":\"%s\",",   streamURL);
+    p+=sprintf(p, "\"http_url\":\"%s\",",     httpURL);
+    p+=sprintf(p, "\"ip\":\"%d.%d.%d.%d\",", ip[0], ip[1], ip[2], ip[3]);
+    p+=sprintf(p, "\"mdns\":\"http://%s.local/\"", mdnsName);
     *p++ = '}';
     *p++ = 0;
     httpd_resp_set_type(req, "application/json");
@@ -1029,6 +1036,7 @@ void startCameraServer(int hPort, int sPort){
         httpd_register_uri_handler(camera_httpd, &dump_uri);
         httpd_register_uri_handler(camera_httpd, &stop_uri);
         httpd_register_uri_handler(camera_httpd, &health_uri);  // E5: always registered
+        httpd_register_uri_handler(camera_httpd, &info_uri);    // also on port 80 for auto-discovery
 #if defined(HAS_SENSORS)
         httpd_register_uri_handler(camera_httpd, &readSensor_uri);
 #endif        
