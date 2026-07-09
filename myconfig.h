@@ -51,7 +51,7 @@
  * When enabled the device advertises itself using MDNS_NAME above.
  */
 // #define NO_OTA
-#define OTA_PASSWORD "change-me"
+#define OTA_PASSWORD "acusky123"
 
 /* NTP
  *  Uncomment to enable the on-board clock.

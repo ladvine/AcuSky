@@ -622,7 +622,13 @@ void WifiSetup() {
     // gets a chance to run. This is the library author's documented fix for
     // exactly this class of hang: "If trying to connect ends up in an
     // endless loop, try setConnectTimeout(60) before autoConnect()."
-    wm.setConnectTimeout(30);
+    //
+    // Set to 10s (not 30s/60s as in most examples): a real connection that's
+    // going to succeed typically resolves in a few seconds. If the saved
+    // network is genuinely absent (e.g. AcuSky-Setup never configured, or
+    // router replaced), waiting longer just delays the AP/portal coming up
+    // with no benefit — we want headless setup to feel instantaneous.
+    wm.setConnectTimeout(10);
     WiFi.setSleep(false);
     // NOTE: WiFi.setTxPower() removed from here — it was being called before
     // wm.autoConnect() initializes the WiFi radio/driver (WiFi.mode(), etc).
@@ -778,15 +784,29 @@ void setup() {
                 else if (error == OTA_END_ERROR)     Serial.println("End Failed");
             });
         ArduinoOTA.begin();
+        // FIX: ArduinoOTA.begin() starts mDNS internally but gives us no
+        // return value to confirm it. Previously this branch printed NOTHING
+        // about mDNS status at all, so a silent failure here was invisible.
+        // Calling MDNS.begin() again here is redundant but harmless (per
+        // ESPmDNS behavior) and gives us the boolean we need to actually
+        // confirm and print success/failure, matching the other branch below.
+        if (!MDNS.begin(mdnsName)) {
+            Serial.println("Error setting up MDNS responder! (OTA path)");
+        } else {
+            Serial.printf("mDNS responder started: http://%s.local\n", mdnsName);
+        }
     } else {
         Serial.println("OTA is disabled");
-        if (!MDNS.begin(mdnsName)) Serial.println("Error setting up MDNS responder!");
-        else Serial.println("mDNS responder started");
+        if (!MDNS.begin(mdnsName)) {
+            Serial.println("Error setting up MDNS responder!");
+        } else {
+            Serial.printf("mDNS responder started: http://%s.local\n", mdnsName);
+        }
     }
-    // Fix 4: addService is safe in both branches above — ArduinoOTA.begin() calls
-    // MDNS.begin() internally when OTA is enabled, and the explicit else branch
-    // above logs (but doesn't block on) failure. ESPmDNS tolerates addService()
-    // being called even if begin() failed; it simply has no effect.
+    // addService is safe regardless of outcome above — both branches now
+    // explicitly call MDNS.begin() with a checked return value (see fix
+    // above), and ESPmDNS tolerates addService() being called even if
+    // begin() failed; it simply has no effect in that case.
     MDNS.addService("http", "tcp", httpPort);
     MDNS.addService("http", "tcp", streamPort);  // E3: advertise stream port so tools auto-discover it
 
