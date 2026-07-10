@@ -922,8 +922,17 @@ void loop() {
     // disconnect reasons (see espressif/arduino-esp32 issue #7210 and
     // multiple community reports of it silently failing to reconnect).
     // We explicitly call WiFi.reconnect() here rather than relying on it.
+    //
+    // After WIFI_MAX_RECONNECT_ATTEMPTS consecutive failures, we restart the
+    // device. A fresh boot runs WifiSetup() -> wm.autoConnect() again, which
+    // will retry the saved network once more and, if that also fails, fall
+    // through to opening the "AcuSky-Setup" config portal automatically —
+    // covering the case where the saved WiFi credentials are no longer valid
+    // (router replaced, password changed) rather than just a transient drop.
+    #define WIFI_MAX_RECONNECT_ATTEMPTS 5
     static unsigned long lastWifiCheck = 0;
     static bool wifiWasUp = true;
+    static int wifiFailCount = 0;
     if (millis() - lastWifiCheck > 5000) {
         lastWifiCheck = millis();
         bool wifiNow = (WiFi.status() == WL_CONNECTED);
@@ -931,13 +940,32 @@ void loop() {
             Serial.println("WiFi disconnected, attempting reconnect...");
             WiFi.reconnect();
             wifiWasUp = false;
+            wifiFailCount = 1;
         } else if (!wifiWasUp && wifiNow) {
             ip = WiFi.localIP(); calcURLs();
             Serial.printf("WiFi reconnected: %d.%d.%d.%d\n", ip[0],ip[1],ip[2],ip[3]);
             wifiWasUp = true;
+            wifiFailCount = 0;
         } else if (!wifiWasUp && !wifiNow) {
-            // Still disconnected after 5s — retry
-            Serial.println("WiFi still disconnected, retrying...");
+            wifiFailCount++;
+            Serial.printf("WiFi still disconnected, retry %d/%d...\n",
+                          wifiFailCount, WIFI_MAX_RECONNECT_ATTEMPTS);
+            if (wifiFailCount >= WIFI_MAX_RECONNECT_ATTEMPTS) {
+                if (streamCount > 0) {
+                    // Don't restart mid-stream — a client may still be receiving
+                    // buffered data even if WiFi.status() briefly misreports.
+                    // Keep retrying; the stream itself will die on its own once
+                    // the socket genuinely times out, and we'll restart on the
+                    // next check after streamCount drops back to 0.
+                    Serial.println("Max reconnect attempts reached, but stream is active — deferring restart.");
+                } else {
+                    Serial.println("WiFi reconnect failed after max attempts.");
+                    Serial.println("Restarting to re-run provisioning (config portal will open if saved WiFi is unreachable)...");
+                    flashLED(1000);
+                    delay(200);
+                    ESP.restart();
+                }
+            }
             WiFi.reconnect();
         }
     }
